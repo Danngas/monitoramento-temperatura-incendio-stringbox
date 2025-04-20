@@ -1,0 +1,1 @@
+# monitoramento-temperatura-incendio-stringbox
