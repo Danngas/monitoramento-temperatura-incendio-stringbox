@@ -54,7 +54,7 @@ void handle_button_2(void);
 void handle_button_3(void);
 void handle_button_4(void);
 void show_debug_screen(uint16_t adc_x, uint16_t adc_y, float temp, bool fire_detected);
-
+int relatorio = 0;
 // Definições de estados do sistema
 typedef enum
 {
@@ -82,11 +82,13 @@ void buzzer_alerta_incendio()
     for (int i = 0; i < 5; i++)
     {
         gpio_put(BUZZER_PIN, 1); // Liga o buzzer
-        sleep_ms(5);             // Som por 100 ms
+        sleep_us(5);             // Som por 100 ms
         gpio_put(BUZZER_PIN, 0); // Desliga o buzzer
-        sleep_ms(10);            // Pausa entre os bipes
+        sleep_us(10);            // Pausa entre os bipes
     }
 }
+
+void gerar_relatorio_evento(SystemStatus status);
 
 // Função para atualizar o estado do sistema
 
@@ -120,6 +122,7 @@ void show_debug_screen(uint16_t adc_x, uint16_t adc_y, float temp, bool fire_det
     }
     else
     {
+        relatorio = 1;
         printf("Estado do Sistema:       NORMAL\n");
         printf("Risco de Incêndio:       NULO\n");
         printf("Ação Recomendada:        Operação Segura\n");
@@ -137,10 +140,22 @@ void show_debug_screen(uint16_t adc_x, uint16_t adc_y, float temp, bool fire_det
     }
     else
     {
+
         printf("\nLED RGB:     VERDE (Sistema Ligado)\n");
     }
 
+    if (temp < 40)
+    {
+        relatorio = 0;
+    }
+
     printf("===================================================\n");
+
+    if (relatorio || (temp >= 60.0f || system_status.fire_detected))
+    {
+        gerar_relatorio_evento(system_status);
+        relatorio = 1;
+    }
 }
 
 // Função para atualizar a matriz de LEDs
@@ -155,6 +170,7 @@ void update_led_matrix(void)
 
         if (countdown <= 0)
         {
+
             vermelho();
             countdown = 0;
         }
@@ -476,4 +492,40 @@ int main()
     // Desliga a matriz de LEDs antes de encerrar
     DesligaMatriz();
     return 0;
+}
+
+// FUNCAO QUE GERA RELATORIO NO TERMINAL
+void gerar_relatorio_evento(SystemStatus status)
+{
+
+    printf("\n=========== RELATÓRIO DE DESLIGAMENTO ===========\n");
+
+    // Timestamp opcional
+    // printf("Horário: %s\n", __TIME__); // Ou use time_us_64() para microssegundos
+
+    printf("Temperatura atual     : %.1f °C\n", status.current_temp);
+    printf("Sensor de Incêndio    : %s\n", status.fire_detected ? "DETECTADO" : "NORMAL");
+
+    const char *causa = "";
+    if (status.fire_detected && status.current_temp >= 60.0f)
+    {
+        causa = "Incêndio detectado + Temperatura Crítica";
+    }
+    else if (status.fire_detected)
+    {
+        causa = "Incêndio detectado";
+    }
+    else if (status.current_temp >= 60.0f)
+    {
+        causa = "Temperatura Crítica";
+    }
+    else
+    {
+        causa = "Desconhecida (falha no sistema?)";
+    }
+
+    printf("Causa do Desligamento : %s\n", causa);
+    printf("Ação Executada        : Contagem regressiva (5 a 0), Seccionamento da String Box\n");
+    printf("Status Final          : SISTEMA DESENERGIZADO \n");
+    printf("=================================================\n\n");
 }
