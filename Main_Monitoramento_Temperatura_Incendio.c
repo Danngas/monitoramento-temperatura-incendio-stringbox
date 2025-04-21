@@ -7,6 +7,8 @@
 #include "lib/ssd1306.h"
 #include "lib/font.h"
 #include "numeros.h"
+#include "pico/bootrom.h"
+
 #define I2C_PORT i2c1
 #define I2C_SDA 14
 #define I2C_SCL 15
@@ -14,22 +16,29 @@
 #define JOYSTICK_X_PIN 26 // GPIO para eixo X
 #define JOYSTICK_Y_PIN 27 // GPIO para eixo Y
 #define JOYSTICK_PB 22    // GPIO para botão do Joystick
-#define Botao_A 5         // GPIO para botão A
-#define botaoB 6          // GPIO para botão B
 
 #define LED_R 11 // GPIO do LED vermelho
 #define LED_G 12 // GPIO do LED verde
 #define LED_B 13 // GPIO do LED azul
 
-#define BUTTON_A 5       // Botão A
-#define BUTTON_B 6       // Botão B (simula sensor de fogo)
+#define Pino_BOTAO_A 5   // Botão A
+#define Pino_BOTAO_B 6   // Botão B (simula sensor de fogo)
 #define MATRIZ_LED_PIN 7 // Pino da matriz de LEDs
+
+#define BUZZER_PIN 21
+float divisor_frequency = 125; // Divisor de frequência para ajustar o tom do PWM
 
 int countdown = 9;
 
 volatile bool toggle_green_led = false;
 volatile bool toggle_leds = true;
 volatile uint8_t border_style = 1;
+
+// Variáveis globais para debouncing
+static absolute_time_t last_button_a_time = 0;
+static absolute_time_t last_button_b_time = 0;
+static absolute_time_t last_joystick_pb_time = 0;
+const uint64_t DEBOUNCE_TIME = 200000; // 200ms em microssegundos
 
 // Declaração da função pwm_set_duty
 void pwm_set_duty(uint gpio, uint16_t value);
@@ -68,6 +77,17 @@ SystemStatus system_status = {
     .current_temp = 0.0f,
     .fire_detected = false};
 
+void buzzer_alerta_incendio()
+{
+    for (int i = 0; i < 5; i++)
+    {
+        gpio_put(BUZZER_PIN, 1); // Liga o buzzer
+        sleep_ms(5);             // Som por 100 ms
+        gpio_put(BUZZER_PIN, 0); // Desliga o buzzer
+        sleep_ms(10);            // Pausa entre os bipes
+    }
+}
+
 // Função para atualizar o estado do sistema
 
 // Função para exibir tela de depuração
@@ -84,43 +104,43 @@ void show_debug_screen(uint16_t adc_x, uint16_t adc_y, float temp, bool fire_det
     // Status do sistema baseado na temperatura
     if (temp >= 60.0f)
     {
-           printf("Estado do Sistema:       CRÍTICO\n");
-            printf("Risco de Incêndio:       ALTO\n");
-            printf("Ação Recomendada:        Desligar String Box\n");
+        printf("Estado do Sistema:       CRÍTICO\n");
+        printf("Risco de Incêndio:       ALTO\n");
+        printf("Ação Recomendada:        Desligar String Box\n");
         system_status.state = SYSTEM_CRITICAL;
         printf("ALERTA: Temperatura Crítica! %.1f°C\n", system_status.current_temp);
     }
     else if (temp >= 40.0f)
     {
-            printf("Estado do Sistema:       ATENÇÃO\n");
-            printf("Risco de Incêndio:       BAIXO\n");
-            printf("Ação Recomendada:        Monitorar (String Box Energizada)\n");
+        printf("Estado do Sistema:       ATENÇÃO\n");
+        printf("Risco de Incêndio:       BAIXO\n");
+        printf("Ação Recomendada:        Monitorar (String Box Energizada)\n");
         system_status.state = SYSTEM_ATTENTION;
         printf("Atenção: Temperatura elevada! %.1f°C\n", system_status.current_temp);
     }
     else
     {
-            printf("Estado do Sistema:       NORMAL\n");
-            printf("Risco de Incêndio:       NULO\n");
-            printf("Ação Recomendada:        Operação Segura\n");
+        printf("Estado do Sistema:       NORMAL\n");
+        printf("Risco de Incêndio:       NULO\n");
+        printf("Ação Recomendada:        Operação Segura\n");
         system_status.state = SYSTEM_NORMAL;
         printf("Temperatura normal: %.1f°C\n", system_status.current_temp);
     }
 
-     printf("\nJoystick:\n");
-     printf("  X = %4d   |   Y = %4d   |   Clicado: %s\n",adc_x, adc_y,gpio_get(JOYSTICK_PB) ? "NÃO" : "SIM");
+    printf("\nJoystick:\n");
+    printf("  X = %4d   |   Y = %4d   |   Clicado: %s\n", adc_x, adc_y, gpio_get(JOYSTICK_PB) ? "NÃO" : "SIM");
 
     // Status do LED RGB
     if (temp >= 60.0f)
     {
-         printf("\nLED RGB:     VERMELHO (Sistema Desligado)\n");
+        printf("\nLED RGB:     VERMELHO (Sistema Desligado)\n");
     }
     else
     {
-         printf("\nLED RGB:     VERDE (Sistema Ligado)\n");
+        printf("\nLED RGB:     VERDE (Sistema Ligado)\n");
     }
 
-     printf("===================================================\n");
+    printf("===================================================\n");
 }
 
 // Função para atualizar a matriz de LEDs
@@ -128,30 +148,10 @@ void update_led_matrix(void)
 {
     static uint32_t last_update = 0;
 
-    switch (system_status.state)
+    if (system_status.current_temp >= 60.0f || system_status.fire_detected)
     {
-    case SYSTEM_NORMAL:
-        if (!system_status.fire_detected){
-        verde();                // LEDs verdes
-        set_rgb_led(255, 0, 0); // RGB verde
-
-        countdown = 9;
-        }
-        break;
-
-    case SYSTEM_ATTENTION:
-    if (!system_status.fire_detected){
-        amarelo(); // LEDs amarelos
-    }   
-        break;
-
-    case SYSTEM_CRITICAL:
-        // Garante que a matriz está vermelha
-
-        // Atualiza o RGB para vermelho
         set_rgb_led(0, 0, 255);
-
-  
+        buzzer_alerta_incendio();
 
         if (countdown <= 0)
         {
@@ -163,9 +163,16 @@ void update_led_matrix(void)
             Num(countdown);
             countdown--;
         }
-        // }
-
-        break;
+    }
+    else if (system_status.current_temp >= 40.0f)
+    {
+        amarelo();
+    }
+    else
+    {
+        verde();
+        set_rgb_led(255, 0, 0); // RGB verde
+        countdown = 9;
     }
 }
 
@@ -175,33 +182,48 @@ void pwm_set_duty(uint gpio, uint16_t value)
     pwm_set_gpio_level(gpio, value);
 }
 
-// Função de interrupção para os botões
-void gpio_callback(uint gpio, uint32_t events)
+// Função de callback para interrupções dos botões
+void button_callback(uint gpio, uint32_t events)
 {
-    static absolute_time_t last_time = {0};
     absolute_time_t now = get_absolute_time();
+    uint64_t time_diff;
 
-    // Debounce de 200ms
-    if (absolute_time_diff_us(last_time, now) < 200000)
+    switch (gpio)
     {
-        return;
-    }
-    last_time = now;
-
-    if (gpio == JOYSTICK_PB)
-    {
-        toggle_green_led = !toggle_green_led;
-        pwm_set_duty(LED_G, toggle_green_led ? 2000 : 0);
-        border_style = (border_style == 1) ? 2 : 1;
-    }
-    else if (gpio == Botao_A)
-    {
-        toggle_leds = !toggle_leds;
-        if (!toggle_leds)
+    case Pino_BOTAO_A:
+        time_diff = absolute_time_diff_us(last_button_a_time, now);
+        if (time_diff >= DEBOUNCE_TIME)
         {
-            pwm_set_duty(LED_R, 0);
-            pwm_set_duty(LED_B, 0);
+            last_button_a_time = now;
+            // Ação para bOTAO a
+            reset_usb_boot(0, 0);
         }
+        break;
+
+    case Pino_BOTAO_B:
+        time_diff = absolute_time_diff_us(last_button_b_time, now);
+        if (time_diff >= DEBOUNCE_TIME)
+        {
+            last_button_b_time = now;
+            // Ação para botão B
+            system_status.fire_detected = !system_status.fire_detected;
+        }
+        break;
+
+    case JOYSTICK_PB:
+        time_diff = absolute_time_diff_us(last_joystick_pb_time, now);
+        if (time_diff >= DEBOUNCE_TIME)
+        {
+            last_joystick_pb_time = now;
+            // Ação para botão do joystick
+            toggle_leds = !toggle_leds;
+            if (!toggle_leds)
+            {
+                pwm_set_duty(LED_R, 0);
+                pwm_set_duty(LED_B, 0);
+            }
+        }
+        break;
     }
 }
 
@@ -215,7 +237,7 @@ float read_temperature(float adc_x)
 bool read_fire_sensor(void)
 {
     // Usa o botão B para simular sensor de fogo
-    return !gpio_get(BUTTON_B); // Inverte porque o botão está com pull-up
+    return !gpio_get(Pino_BOTAO_B); // Inverte porque o botão está com pull-up
 }
 
 // Função para atualizar a matriz de LEDs
@@ -252,19 +274,22 @@ int main()
     // Inicializa a matriz de LEDs
     npInit(MATRIZ_LED_PIN);
 
+    gpio_init(BUZZER_PIN);
+    gpio_set_dir(BUZZER_PIN, GPIO_OUT);
+
     // Para ser utilizado o modo BOOTSEL com botão B
-    gpio_init(botaoB);
-    gpio_set_dir(botaoB, GPIO_IN);
-    gpio_pull_up(botaoB);
-    gpio_set_irq_enabled_with_callback(botaoB, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+    gpio_init(Pino_BOTAO_B);
+    gpio_set_dir(Pino_BOTAO_B, GPIO_IN);
+    gpio_pull_up(Pino_BOTAO_B);
+    gpio_set_irq_enabled_with_callback(Pino_BOTAO_B, GPIO_IRQ_EDGE_FALL, true, &button_callback);
 
     gpio_init(JOYSTICK_PB);
     gpio_set_dir(JOYSTICK_PB, GPIO_IN);
     gpio_pull_up(JOYSTICK_PB);
 
-    gpio_init(Botao_A);
-    gpio_set_dir(Botao_A, GPIO_IN);
-    gpio_pull_up(Botao_A);
+    gpio_init(Pino_BOTAO_A);
+    gpio_set_dir(Pino_BOTAO_A, GPIO_IN);
+    gpio_pull_up(Pino_BOTAO_A);
 
     // I2C Initialisation. Using it at 400Khz.
     i2c_init(I2C_PORT, 400 * 1000);
@@ -318,8 +343,9 @@ int main()
     gpio_set_function(LED_B, GPIO_FUNC_PWM);
 
     // Configura os botões
-    gpio_set_irq_enabled_with_callback(JOYSTICK_PB, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
-    gpio_set_irq_enabled(Botao_A, GPIO_IRQ_EDGE_FALL, true);
+    gpio_set_irq_enabled_with_callback(Pino_BOTAO_A, GPIO_IRQ_EDGE_FALL, true, &button_callback);
+    gpio_set_irq_enabled_with_callback(Pino_BOTAO_B, GPIO_IRQ_EDGE_FALL, true, &button_callback);
+    gpio_set_irq_enabled_with_callback(JOYSTICK_PB, GPIO_IRQ_EDGE_FALL, true, &button_callback);
 
     // Configuração do PWM para os LEDs
     uint slice_num_r = pwm_gpio_to_slice_num(LED_R);
@@ -356,25 +382,16 @@ int main()
         // Lê temperatura e estado do sensor
         float temp = read_temperature(adc_x);
         system_status.current_temp = temp;
-        bool fire = read_fire_sensor();
-
-        if (fire){
-            system_status.state = SYSTEM_CRITICAL;
-        }
-        else{
-            system_status.state = SYSTEM_NORMAL;
-        }
-
-        // Exibe tela de depuração
+        // bool fire = read_fire_sensor();
+        // system_status.fire_detected = fire;
+        //  Exibe tela de depuração
         uint64_t agora = time_us_64(); // tempo atual em microssegundos
 
         if (agora - ultimo_tempo >= intervalo)
         {
             ultimo_tempo = agora;
-            show_debug_screen(adc_x, adc_y, temp, fire);
+            show_debug_screen(adc_x, adc_y, temp, system_status.fire_detected);
         }
-
-       
 
         // Atualiza posição do quadrado com limites
         x_pos = ((adc_y * (WIDTH - 24)) / 4095) + 8;            // Adiciona margem horizontal
