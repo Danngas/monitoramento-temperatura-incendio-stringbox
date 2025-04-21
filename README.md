@@ -1,112 +1,101 @@
-# Sistema de Monitoramento de Temperatura para Painéis Solares
-Daniel Silva de souza
+# Sistema de Monitoramento de Temperatura e Incêndio para String Box
+**Autor:** Daniel Silva de Souza
 
-link do Video: https://youtu.be/9FZJZ7f-6wM?si=kijlpPfXn_Z4Mnjq
+🎥 **Vídeo demonstrativo:** https://youtu.be/9FZJZ7f-6wM?si=kijlpPfXn_Z4Mnjq
 
-Um sistema embarcado baseado no Raspberry Pi Pico para monitoramento em tempo real de temperatura em painéis solares, com interface gráfica em display OLED e sistema de alertas visuais.
+Um sistema embarcado baseado no Raspberry Pi Pico para monitoramento em tempo real de temperatura e detecção de incêndio em sistemas fotovoltaicos, com exibição em display OLED, alerta sonoro via buzzer e indicação visual por LED RGB e matriz de LEDs.
+
+---
 
 ## 📋 Características
 
-- Display OLED SSD1306 128x64
-- Sensor de temperatura analógico
-- Indicador LED RGB para alertas
-- Interface com 2 botões de navegação
-- Múltiplas telas de visualização
-- Sistema de alertas configurável
-- Armazenamento de histórico
-- Visualização em tempo real
-- Estatísticas de temperatura
+- Display OLED SSD1306 (128x64)
+- Leitura de temperatura via ADC (sensor analógico simulado)
+- Detecção de incêndio simulada por botão
+- Indicadores visuais:
+  - LED RGB (normal, atenção e crítico)
+  - Matriz de LEDs colorida
+- Alerta sonoro com buzzer
+- Joystick analógico com visualização da posição no display
+- Relatório de evento crítico no terminal
+- Interface interativa em tempo real via display
+
+---
 
 ## 🔧 Hardware Necessário
 
 - Raspberry Pi Pico
-- Display OLED SSD1306 (128x64)
-- Sensor de temperatura analógico
-- LED RGB
+- Display OLED SSD1306 (I2C)
+- Sensor de temperatura analógico (ou potenciômetro simulando)
+- LED RGB (3 canais com controle PWM)
 - 2 botões push-button
+- Joystick analógico com botão central
+- Matriz de LEDs WS2812
+- Buzzer ativo
 - Resistores pull-up para botões
-- Cabos de conexão
+- Cabos jumper e protoboard
 
-### Pinagem
+---
 
-- **I2C (Display OLED)**
-  - SDA: GPIO 14
-  - SCL: GPIO 15
+## 📌 Pinagem
 
-- **Botões**
-  - Botão A: GPIO 5
-  - Botão B: GPIO 6
+### 📟 I2C - Display OLED
+- SDA: GPIO 14  
+- SCL: GPIO 15
 
-- **LED RGB**
-  - Vermelho: GPIO 13
-  - Verde: GPIO 11
-  - Azul: GPIO 12
+### 🕹️ Joystick
+- Eixo X (ADC0): GPIO 26  
+- Eixo Y (ADC1): GPIO 27  
+- Botão (Push): GPIO 22
 
-- **Sensor**
-  - Temperatura: GPIO 26 (ADC0)
+### 🔘 Botões
+- Botão A: GPIO 5 (modo BOOTSEL)
+- Botão B: GPIO 6 (simula incêndio)
+
+### 🔴 LED RGB
+- Vermelho: GPIO 11  
+- Verde: GPIO 12  
+- Azul: GPIO 13
+
+### 🔊 Buzzer
+- GPIO 21
+
+### 🧱 Matriz de LEDs
+- GPIO 7
+
+---
 
 ## 🚀 Funcionalidades
 
-### 1. Tela Inicial (Splash Screen)
-- Logo do sistema
-- Versão do software
-- Instruções básicas de navegação
+- 📈 Leitura contínua da temperatura
+- 🔥 Detecção de incêndio simulada via botão
+- 🟢🟡🔴 Indicação por LED RGB:
+  - Verde: temperatura normal
+  - Amarelo: temperatura elevada
+  - Vermelho: temperatura crítica / incêndio
+- 🧠 Lógica de desligamento com contagem regressiva (visível na matriz)
+- 📢 Alerta sonoro com buzzer (5 bipes)
+- 🖥️ Exibição de status e joystick no terminal (via USB serial)
+- 🧾 Geração automática de relatório ao detectar evento crítico
 
-### 2. Menu Principal
-Navegue entre as opções usando o Botão A, selecione com o Botão B:
-- Monitor
-- Histórico
-- Configuração
-- Estatísticas
-- Alertas
+---
 
-### 3. Monitor em Tempo Real
-- Gráfico de temperatura em tempo real
-- Valor atual da temperatura
-- Escala automática
-- Atualização contínua
+## 🧪 Funcionamento
 
-### 4. Histórico
-- Visualização das últimas 128 leituras
-- Rolagem através do histórico
-- Indicadores de navegação
-- Timestamps das medições
+- Temperatura < 40°C → Estado **NORMAL**
+- Temperatura entre 40–59°C → Estado **ATENÇÃO**
+- Temperatura ≥ 60°C ou fogo detectado → Estado **CRÍTICO**  
+  → Aciona buzzer, mostra contagem na matriz e emite relatório
 
-### 5. Configuração
-Ajuste os parâmetros do sistema:
-- Limite de temperatura normal
-- Limite de atenção
-- Limite de urgência
-- Intervalo de amostragem
-
-### 6. Estatísticas
-Exibe dados estatísticos:
-- Temperatura atual
-- Temperatura máxima
-- Temperatura mínima
-- Média de temperatura
-
-### 7. Sistema de Alertas
-Três níveis de alerta com indicação visual por LED RGB:
-- **Normal (Verde)**: Operação normal
-- **Atenção (Amarelo)**: Temperatura elevada
-- **Urgente (Vermelho Piscante)**: Temperatura crítica
-
-## 🎮 Navegação
-
-- **Botão A**: 
-  - No menu: Navega entre as opções
-  - Nas telas: Retorna ao menu
-
-- **Botão B**:
-  - No menu: Seleciona a opção
-  - Nas telas: Função específica da tela
+---
 
 ## 🛠️ Instalação
 
 1. Clone o repositório:
    ```bash
-   git clone https://github.com/seu-usuario/sistema-temperatura.git
+   git clone https://github.com/seu-usuario/monitoramento-temperatura-incendio.git
+
+
    ```
 
 2. Configure o ambiente de desenvolvimento Pico SDK
@@ -122,29 +111,15 @@ Três níveis de alerta com indicação visual por LED RGB:
 ## 📦 Estrutura do Projeto
 
 ├── lib/
-│ ├── ssd1306.h
-│ ├── ssd1306.c
-│ └── font.h
+│   ├── ssd1306.h
+│   ├── ssd1306.c
+│   └── font.h
+├── numeros.h          # Controle da matriz de LEDs (cores e números)
+├── Main_Monitoramento_Temperatura_Incendio.c
 ├── CMakeLists.txt
-├── System_Monitor_Temp_PV.c
 └── README.md
 
 
-## 🔄 Ciclo de Amostragem
-
-- Intervalo de amostragem: 1000ms
-- Buffer circular de 128 amostras
-- Atualização do display: 50ms
-- Debounce dos botões: 200ms
-
-## 🔧 Customização
-
-O sistema pode ser customizado através das definições no início do arquivo principal:
-- Limites de temperatura
-- Intervalos de amostragem
-- Tamanho do buffer
-- Pinagem
-- Configurações do display
 
 ## 📈 Melhorias Futuras
 
@@ -153,6 +128,7 @@ O sistema pode ser customizado através das definições no início do arquivo p
 - [ ] Interface web
 - [ ] Mais opções de sensores
 - [ ] Exportação de dados
+- [ ] Registro de histórico de eventos
 
 ## 📄 Licença
 
