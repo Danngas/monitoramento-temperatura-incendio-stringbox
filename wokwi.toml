@@ -1,4 +1,4 @@
 [wokwi]
 version = 1
-firmware = 'build/System_Monitor_Temp_PV.uf2'
-elf = 'build/System_Monitor_Temp_PV.elf'
+firmware = 'build/Main_Monitoramento_Temperatura_Incendio.uf2'
+elf = 'build/Main_Monitoramento_Temperatura_Incendio.elf'

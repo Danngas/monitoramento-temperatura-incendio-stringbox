@@ -27,8 +27,7 @@ pico_sdk_init()
 
 add_executable(${PROJECT_NAME}
     ${PROJECT_NAME}.c
-    lib/graphics.c
-    lib/ssd1306.c
+        lib/ssd1306.c
 )
 
 
