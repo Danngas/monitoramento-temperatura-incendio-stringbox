@@ -1,7 +1,7 @@
 # Sistema de Monitoramento de Temperatura e Incêndio para String Box
 **Autor:** Daniel Silva de Souza
 
-🎥 **Vídeo demonstrativo:** https://youtu.be/9FZJZ7f-6wM?si=kijlpPfXn_Z4Mnjq
+🎥 **Vídeo demonstrativo:** https://youtu.be/cHueXqtdbL4?si=GnKNS9w8MRPJtKAh
 
 Um sistema embarcado baseado no Raspberry Pi Pico para monitoramento em tempo real de temperatura e detecção de incêndio em sistemas fotovoltaicos, com exibição em display OLED, alerta sonoro via buzzer e indicação visual por LED RGB e matriz de LEDs.
 
