@@ -4,689 +4,322 @@
 #include "hardware/adc.h"
 #include "hardware/i2c.h"
 #include "hardware/pwm.h"
-#include "hardware/clocks.h"
 #include "lib/ssd1306.h"
-#include "lib/graphics.h"
-#include "string.h"
+#include "lib/font.h"
 #include "numeros.h"
-
-// veja para qie voce usou isso
-#include "hardware/timer.h"
-
-
-#define LED_PIN 7
-
-
 #define I2C_PORT i2c1
 #define I2C_SDA 14
 #define I2C_SCL 15
-#define DISPLAY_ADDR 0x3C
+#define endereco 0x3C
+#define JOYSTICK_X_PIN 26 // GPIO para eixo X
+#define JOYSTICK_Y_PIN 27 // GPIO para eixo Y
+#define JOYSTICK_PB 22    // GPIO para botão do Joystick
+#define Botao_A 5         // GPIO para botão A
+#define botaoB 6          // GPIO para botão B
 
-#define TEMP_SENSOR_PIN 26   // GPIO para sensor de temperatura
-#define SAMPLE_INTERVAL 1000 // Intervalo de amostragem em ms
-#define MAX_SAMPLES 100      // Número máximo de amostras para o gráfico
+#define LED_R 11 // GPIO do LED vermelho
+#define LED_G 12 // GPIO do LED verde
+#define LED_B 13 // GPIO do LED azul
 
-// Adicionar estas definições no início do arquivo
-#define GRAPH_Y_START 20
-#define GRAPH_WIDTH 128
+#define BUTTON_A 5       // Botão A
+#define BUTTON_B 6       // Botão B (simula sensor de fogo)
+#define MATRIZ_LED_PIN 7 // Pino da matriz de LEDs
 
-// Adicione estas definições no início do arquivo, após os outros #defines
-#define BUTTON_A_PIN 5 // GPIO para o botão A
-#define BUTTON_B_PIN 6 // GPIO para o botão B
+int countdown = 9;
 
-// Buffer circular para armazenar as temperaturas
-float temp_history[MAX_SAMPLES];
-int current_index = 0;
-int num_samples = 0;
+volatile bool toggle_green_led = false;
+volatile bool toggle_leds = true;
+volatile uint8_t border_style = 1;
 
-// Atualizar a estrutura do gráfico
-Graph graph = {
-    .x_offset = MARGIN_LEFT,
-    .y_offset = 5,
-    .width = DISPLAY_WIDTH - MARGIN_LEFT - 5,
-    .height = GRAPH_HEIGHT,
-    .y_min = 0,
-    .y_max = 50,
-    .y_pixels = GRAPH_HEIGHT,
-    .x_divisions = 5,
-    .y_divisions = 4};
+// Declaração da função pwm_set_duty
+void pwm_set_duty(uint gpio, uint16_t value);
 
-// Definições do sistema de menu
-#define SPLASH_DURATION 3000 // Duração da tela inicial em ms
+// Declarações de funções
+void set_led_matrix_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b);
+void set_rgb_led(uint8_t r, uint8_t g, uint8_t b);
+float read_temperature(float adc_x);
+bool read_fire_sensor(void);
+void update_display(void);
+void handle_button_1(void);
+void handle_button_2(void);
+void handle_button_3(void);
+void handle_button_4(void);
+void show_debug_screen(uint16_t adc_x, uint16_t adc_y, float temp, bool fire_detected);
 
-// Estados do sistema
+// Definições de estados do sistema
 typedef enum
 {
-    STATE_SPLASH,
-    STATE_MENU,
-    STATE_MONITOR,
-    STATE_HISTORY,
-    STATE_CONFIG,
-    STATE_STATS,
-    STATE_ALERTS // Novo estado
+    SYSTEM_NORMAL,    // 0-39°C
+    SYSTEM_ATTENTION, // 40-59°C
+    SYSTEM_CRITICAL   // 60°C ou mais
 } SystemState;
 
-// Opções do menu principal
-typedef enum
-{
-    MENU_MONITOR,
-    MENU_HISTORY,
-    MENU_CONFIG,
-    MENU_STATS,
-    MENU_ALERTS, // Nova opção
-    MENU_COUNT
-} MenuItem;
-
-// Estrutura para armazenar estatísticas
+// Estrutura para status do sistema
 typedef struct
 {
-    float min_temp;
-    float max_temp;
-    float avg_temp;
-} TempStats;
+    SystemState state;
+    float current_temp;
+    bool fire_detected;
+} SystemStatus;
 
-// Variáveis globais do sistema
-SystemState current_state = STATE_SPLASH;
-MenuItem selected_menu_item = MENU_MONITOR;
-TempStats temp_stats = {.min_temp = 100.0f, .max_temp = -100.0f, .avg_temp = 0.0f};
-uint32_t splash_start_time = 0;
+// Variável global do status do sistema
+SystemStatus system_status = {
+    .state = SYSTEM_NORMAL,
+    .current_temp = 0.0f,
+    .fire_detected = false};
 
-// Variáveis globais para controle de estado
-volatile bool button_a_pressed = false;
-volatile bool button_b_pressed = false;
+// Função para atualizar o estado do sistema
 
-// Adicione estas definições no início do arquivo, após os outros #defines
-#define HISTORY_SIZE 128           // Tamanho baseado na largura do display
-#define DISPLAY_LINES 4            // Número de linhas no modo histórico
-#define TEMP_READ_INTERVAL_MS 1000 // Intervalo de 1 segundo
-
-// Definições dos canais ADC
-#define ADC_CHANNEL_TEMP 0   // Canal 0 para o sensor de temperatura
-#define ADC_CHANNEL_SCROLL 1 // Canal 1 para o controle de rolagem
-
-// Estrutura para armazenar o histórico
-struct
+// Função para exibir tela de depuração
+void show_debug_screen(uint16_t adc_x, uint16_t adc_y, float temp, bool fire_detected)
 {
-    float temperatures[HISTORY_SIZE];
-    int count;
-    int newest_index;
-    int scroll_position;
-    float min_temp;
-    float max_temp;
-} temperature_history = {
-    .temperatures = {0},
-    .count = 0,
-    .newest_index = 0,
-    .scroll_position = 0,
-    .min_temp = 100.0f,
-    .max_temp = 0.0f};
+    // Limpa o terminal e move o cursor para o início
+    printf("\033[2J\033[H");
 
-// Variável para controle de atualização do display
-volatile bool new_temperature_available = false;
+    printf("===== MONITORAMENTO DE TEMPERATURA E INCÊNDIO =====\n");
+    printf("Temperatura Atual:       %.1f °C\n", temp);
+    printf("Temperatura de Referência:  0.0 °C\n");
+    printf("Sensor de Incêndio:      %s\n", fire_detected ? "DETECTADO" : "NORMAL");
 
-// Definições para o condicionamento do gráfico
-#define GRAPH_Y_MIN 0  // Valor mínimo do eixo Y (pixels)
-#define GRAPH_Y_MAX 52 // Valor máximo do eixo Y (pixels)
-#define TEMP_MIN_SENSOR 0
-#define TEMP_MAX_SENSOR 100
+    // Status do sistema baseado na temperatura
+    if (temp >= 60.0f)
+    {
+           printf("Estado do Sistema:       CRÍTICO\n");
+            printf("Risco de Incêndio:       ALTO\n");
+            printf("Ação Recomendada:        Desligar String Box\n");
+        system_status.state = SYSTEM_CRITICAL;
+        printf("ALERTA: Temperatura Crítica! %.1f°C\n", system_status.current_temp);
+    }
+    else if (temp >= 40.0f)
+    {
+            printf("Estado do Sistema:       ATENÇÃO\n");
+            printf("Risco de Incêndio:       BAIXO\n");
+            printf("Ação Recomendada:        Monitorar (String Box Energizada)\n");
+        system_status.state = SYSTEM_ATTENTION;
+        printf("Atenção: Temperatura elevada! %.1f°C\n", system_status.current_temp);
+    }
+    else
+    {
+            printf("Estado do Sistema:       NORMAL\n");
+            printf("Risco de Incêndio:       NULO\n");
+            printf("Ação Recomendada:        Operação Segura\n");
+        system_status.state = SYSTEM_NORMAL;
+        printf("Temperatura normal: %.1f°C\n", system_status.current_temp);
+    }
 
-uint16_t adc_value_x;
-char TEMP_REAL[5];
-// Limites de temperatura ajustáveis
-struct
-{
-    float temp_min;    // Temperatura mínima para escala
-    float temp_max;    // Temperatura máxima para escala
-    float current_min; // Menor temperatura registrada
-    float current_max; // Maior temperatura registrada
-} temp_scale = {
-    .temp_min = 20.0f, // Limite inferior inicial
-    .temp_max = 40.0f, // Limite superior inicial
-    .current_min = 100.0f,
-    .current_max = 0.0f};
+     printf("\nJoystick:\n");
+     printf("  X = %4d   |   Y = %4d   |   Clicado: %s\n",adc_x, adc_y,gpio_get(JOYSTICK_PB) ? "NÃO" : "SIM");
 
-#define ADC_MAX_VALUE 4095 // Valor máximo do ADC (12 bits)
-#define ADC_MID_VALUE 2047 // Valor médio do ADC
-#define GRAPH_Y_MID 26     // Ponto médio do gráfico
+    // Status do LED RGB
+    if (temp >= 60.0f)
+    {
+         printf("\nLED RGB:     VERMELHO (Sistema Desligado)\n");
+    }
+    else
+    {
+         printf("\nLED RGB:     VERDE (Sistema Ligado)\n");
+    }
 
-// Definir tipos de alerta
-typedef enum
-{
-    ALERT_NORMAL,
-    ALERT_ATTENTION,
-    ALERT_URGENT
-} AlertType;
-
-// Estrutura para configuração de alertas
-typedef struct
-{
-    float temp_normal_max;    // Limite superior para operação normal
-    float temp_attention_max; // Limite superior para atenção
-    float temp_urgent_max;    // Limite superior para urgente
-    AlertType current_alert;  // Estado atual do alerta
-} AlertConfig;
-    
-// Inicialização da configuração de alertas
-AlertConfig alert_config = {
-    .temp_normal_max = 55.0f,    // Operação normal até 45°C
-    .temp_attention_max = 65.0f, // Atenção até 65°C
-    .temp_urgent_max = 80.0f,    // Urgente acima de 65°C
-    .current_alert = ALERT_NORMAL};
-
-// Definições dos pinos do LED RGB
-
-#define LED_R 13 // GPIO do LED vermelho
-#define LED_G 11 // GPIO do LED verde
-#define LED_B 12 // GPIO do LED azul
-
-// Definições para PWM
-#define PWM_FREQ 1000
-#define PWM_DUTY 50
-#define PWM_WRAP 65535 // Wrap value for 16-bit PWM
-
-// Controle de intensidade do LED (0.0 a 1.0)
-// Ajuste este valor para encontrar a intensidade ideal
-#define LED_INTENSITY 0.1f // 10% de intensidade - ajuste conforme necessário
-
-// Estrutura para controle do LED RGB
-typedef struct
-{
-    uint slice_red;
-    uint slice_green;
-    uint slice_blue;
-} RGB_LED_Control;
-
-RGB_LED_Control rgb_led;
-
-// Função para inicializar o LED RGB
-
-// Função para calcular o nível PWM baseado na intensidade
-uint16_t get_pwm_level(void)
-{
-    // Garante que a intensidade está entre 0 e 1
-    float intensity = (LED_INTENSITY < 0.0f) ? 0.0f : (LED_INTENSITY > 1.0f) ? 1.0f
-                                                                             : LED_INTENSITY;
-
-    // Como os LEDs são ativos em nível baixo:
-    // - PWM_WRAP = LED desligado
-    // - 0 = LED com brilho máximo
-    return (uint16_t)(PWM_WRAP * intensity);
+     printf("===================================================\n");
 }
 
+// Função para atualizar a matriz de LEDs
+void update_led_matrix(void)
+{
+    static uint32_t last_update = 0;
+
+    switch (system_status.state)
+    {
+    case SYSTEM_NORMAL:
+        if (!system_status.fire_detected){
+        verde();                // LEDs verdes
+        set_rgb_led(255, 0, 0); // RGB verde
+
+        countdown = 9;
+        }
+        break;
+
+    case SYSTEM_ATTENTION:
+    if (!system_status.fire_detected){
+        amarelo(); // LEDs amarelos
+    }   
+        break;
+
+    case SYSTEM_CRITICAL:
+        // Garante que a matriz está vermelha
+
+        // Atualiza o RGB para vermelho
+        set_rgb_led(0, 0, 255);
+
+  
+
+        if (countdown <= 0)
+        {
+            vermelho();
+            countdown = 0;
+        }
+        else
+        {
+            Num(countdown);
+            countdown--;
+        }
+        // }
+
+        break;
+    }
+}
+
+// Implementação da função
 void pwm_set_duty(uint gpio, uint16_t value)
 {
     pwm_set_gpio_level(gpio, value);
 }
 
-// Função para atualizar o LED baseado no status
-void update_led_status(AlertType alert_status)
-{
-    uint16_t pwm_level = get_pwm_level();
-
-    switch (alert_status)
-    {
-    case ALERT_NORMAL:
-        // Verde ligado, outros desligados
-        pwm_set_duty(LED_R, 0);   // Desligado
-        pwm_set_duty(LED_G, 500); // Verde ligado
-        pwm_set_duty(LED_B, 0);   // Desligado
-        break;
-
-    case ALERT_ATTENTION:
-        // Amarelo (vermelho + verde)
-        pwm_set_duty(LED_R, 500); // Vermelho ligado
-        pwm_set_duty(LED_G, 500); // Verde ligado
-        pwm_set_duty(LED_B, 0);   // Desligado
-        break;
-
-    case ALERT_URGENT:
-        // Vermelho piscante
-        static bool led_state = false;
-        led_state = !led_state;
-        pwm_set_duty(LED_R, 500); // Vermelho piscando
-        pwm_set_duty(LED_G, 0);   // Desligado
-        pwm_set_duty(LED_B, 0);   // Desligado
-        break;
-    }
-}
-
-// Função de callback compartilhada para ambos os botões
+// Função de interrupção para os botões
 void gpio_callback(uint gpio, uint32_t events)
 {
-    // Debounce por software
-    static uint32_t last_interrupt_time_a = 0;
-    static uint32_t last_interrupt_time_b = 0;
-    uint32_t interrupt_time = time_us_32();
+    static absolute_time_t last_time = {0};
+    absolute_time_t now = get_absolute_time();
 
-    if (gpio == BUTTON_A_PIN)
+    // Debounce de 200ms
+    if (absolute_time_diff_us(last_time, now) < 200000)
     {
-        if (interrupt_time - last_interrupt_time_a > 200000)
-        { // 200ms debounce
-            button_a_pressed = true;
-        }
-        last_interrupt_time_a = interrupt_time;
+        return;
     }
-    else if (gpio == BUTTON_B_PIN)
+    last_time = now;
+
+    if (gpio == JOYSTICK_PB)
     {
-        if (interrupt_time - last_interrupt_time_b > 200000)
-        { // 200ms debounce
-            button_b_pressed = true;
-        }
-        last_interrupt_time_b = interrupt_time;
+        toggle_green_led = !toggle_green_led;
+        pwm_set_duty(LED_G, toggle_green_led ? 2000 : 0);
+        border_style = (border_style == 1) ? 2 : 1;
     }
-}
-
-// Funções para desenhar as diferentes telas
-
-float map_value(float x, float x1, float x2, float y1, float y2)
-{
-    return y1 + ((x - x1) * (y2 - y1)) / (x2 - x1);
-}
-
-void draw_splash_screen(ssd1306_t *ssd)
-{
-    ssd1306_fill(ssd, false);
-    ssd1306_line(ssd, 0, 0, 128, 0, true); // desenha uma linha horizontal de (6,5) até (120,5)
-    ssd1306_line(ssd, 0, 0, 128, 0, true); // desenha uma linha horizontal de (6,5) até (120,5)
-    ssd1306_draw_string(ssd, " System Monitor", 4, 10);
-    ssd1306_draw_string(ssd, "Painel Solar", 20, 20);
-    ssd1306_draw_string(ssd, "Versao 1.0", 25, 40);
-    ssd1306_draw_string(ssd, " A:Menu B:Entrar", 0, 55);
-}
-
-#define MENU_ITEMS_VISIBLE 4 // Número máximo de itens visíveis no display
-
-void draw_menu_screen(ssd1306_t *ssd)
-{
-    ssd1306_fill(ssd, false);
-    const char *menu_items[] = {"Monitor", "Historico", "Config", "Stats", "Alertas"};
-
-    // Calcula o primeiro item visível baseado na seleção atual
-    int first_visible = 0;
-    if (selected_menu_item >= MENU_ITEMS_VISIBLE)
+    else if (gpio == Botao_A)
     {
-        first_visible = selected_menu_item - MENU_ITEMS_VISIBLE + 1;
-    }
-
-    // Desenha apenas os itens visíveis
-    for (int i = 0; i < MENU_ITEMS_VISIBLE && (i + first_visible) < MENU_COUNT; i++)
-    {
-        char line[32];
-        int current_item = i + first_visible;
-
-        // Adiciona indicadores de scroll se necessário
-        if (first_visible > 0 && i == 0)
+        toggle_leds = !toggle_leds;
+        if (!toggle_leds)
         {
-            ssd1306_draw_string(ssd, "^", 60, 0); // Seta para cima
-        }
-        if ((first_visible + MENU_ITEMS_VISIBLE) < MENU_COUNT && i == (MENU_ITEMS_VISIBLE - 1))
-        {
-            ssd1306_draw_string(ssd, "v", 60, 45); // Seta para baixo
-        }
-
-        snprintf(line, sizeof(line), "%s%s",
-                 (current_item == selected_menu_item) ? "> " : "  ",
-                 menu_items[current_item]);
-        ssd1306_draw_string(ssd, line, 10, i * 15);
-    }
-}
-
-// Função para ler e condicionar o sinal do joystick
-float read_joystick_value()
-{
-    adc_select_input(0);       // Seleciona o canal ADC para o pino 26
-    uint16_t raw = adc_read(); // Leitura do ADC de 12 bits (0-4095)
-
-    // Condicionamento do sinal:
-    // Mapeia a leitura do ADC (0-4095) para o range desejado (0-52)
-    float mapped_value = (float)raw * 52.0f / 4095.0f;
-
-    // Garante que o valor está dentro dos limites
-    if (mapped_value < 0.0f)
-        mapped_value = 0.0f;
-    if (mapped_value > 52.0f)
-        mapped_value = 52.0f;
-
-    return mapped_value;
-}
-
-// Função para adicionar nova temperatura ao histórico
-void add_temperature_to_history(float temp)
-{
-    temperature_history.temperatures[temperature_history.newest_index] = temp;
-    temperature_history.newest_index = (temperature_history.newest_index + 1) % HISTORY_SIZE;
-    if (temperature_history.count < HISTORY_SIZE)
-    {
-        temperature_history.count++;
-    }
-}
-
-// Função modificada para debug
-void draw_history_screen(ssd1306_t *ssd)
-{
-    ssd1306_fill(ssd, false);
-    ssd1306_draw_string(ssd, "Historico Temp.", 5, 0);
-    ssd1306_line(ssd, 0, 10, 128, 10, true);
-
-    // Debug: mostra quantidade de temperaturas armazenadas
-    char debug_str[16];
-    snprintf(debug_str, sizeof(debug_str), "Total: %d", temperature_history.count);
-    ssd1306_draw_string(ssd, debug_str, 5, 15);
-
-    // Lê o valor do joystick para rolagem
-    adc_select_input(ADC_CHANNEL_SCROLL);
-    uint16_t scroll_raw = adc_read();
-
-    // Ajusta a posição de rolagem baseado no joystick
-    if (scroll_raw > 3000)
-    {
-        if (temperature_history.scroll_position > 0)
-        {
-            temperature_history.scroll_position--;
-        }
-    }
-    else if (scroll_raw < 1000)
-    {
-        if (temperature_history.scroll_position < (temperature_history.count - DISPLAY_LINES))
-        {
-            temperature_history.scroll_position++;
-        }
-    }
-
-    // Desenha as temperaturas visíveis
-    for (int i = 0; i < DISPLAY_LINES && i < temperature_history.count; i++)
-    {
-        char temp_str[16];
-        int display_index = i + temperature_history.scroll_position;
-
-        // Calcula o índice real no array circular
-        int actual_index = (temperature_history.newest_index - 1 - display_index + HISTORY_SIZE) % HISTORY_SIZE;
-
-        snprintf(temp_str, sizeof(temp_str), "%2d: %.1f C",
-                 display_index + 1,
-                 map_value(temperature_history.temperatures[actual_index], 0, 4095, TEMP_MIN_SENSOR, TEMP_MAX_SENSOR));
-
-        ssd1306_draw_string(ssd, temp_str, 5, 27 + (i * 10));
-    }
-
-    // Indicadores de rolagem
-    if (temperature_history.count > DISPLAY_LINES)
-    {
-        if (temperature_history.scroll_position > 0)
-        {
-            ssd1306_draw_string(ssd, "^", 120, 15);
-        }
-        if (temperature_history.scroll_position < (temperature_history.count - DISPLAY_LINES))
-        {
-            ssd1306_draw_string(ssd, "v", 120, 50);
+            pwm_set_duty(LED_R, 0);
+            pwm_set_duty(LED_B, 0);
         }
     }
 }
 
-// Função para converter valor do ADC em posição Y no gráfico
-int adc_to_y_position(uint16_t adc_value)
+// Implementação das funções
+float read_temperature(float adc_x)
 {
-    // Conversão linear: y = (52 * adc_value) / 4095
-    return (GRAPH_Y_MAX * adc_value) / ADC_MAX_VALUE;
+    // Converte valor ADC para temperatura (0-100°C)
+    return (float)(adc_x * 100.0f / 4095.0f) - 20;
 }
 
-// Função atualizada para desenhar o gráfico
-void draw_graph_screen(ssd1306_t *ssd)
+bool read_fire_sensor(void)
 {
-    ssd1306_fill(ssd, false);
-
-    // Desenha eixos
-    ssd1306_line(ssd, 10, 0, 10, GRAPH_Y_MAX, true);            // Eixo Y
-    ssd1306_line(ssd, 10, GRAPH_Y_MAX, 127, GRAPH_Y_MAX, true); // Eixo X
-
-    // Desenha marcações de escala no eixo Y
-    char value_str[8];
-    // Marca valor máximo (4095)
-    // snprintf(value_str, sizeof(value_str), "4095");
-    // ssd1306_draw_string(ssd, value_str, 0, 0);
-
-    // Marca valor médio (2047)
-    // snprintf(value_str, sizeof(value_str), "2047");
-    // ssd1306_draw_string(ssd, value_str, 0, GRAPH_Y_MID - 4);
-
-    // Marca valor mínimo (0)
-    // snprintf(value_str, sizeof(value_str), "0");
-    // ssd1306_draw_string(ssd, value_str, 0, GRAPH_Y_MAX - 8);
-
-    // Desenha linha de referência no ponto médio
-    // ssd1306_line(ssd, 10, GRAPH_Y_MID, 15, GRAPH_Y_MID, true);
-
-    // Plota os pontos usando valores diretos do ADC
-    for (int i = 0; i < temperature_history.count - 1 && i < 116; i++)
-    {
-        int idx = (temperature_history.newest_index - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-        int next_idx = (temperature_history.newest_index - 2 - i + HISTORY_SIZE) % HISTORY_SIZE;
-
-        uint16_t adc_value = temperature_history.temperatures[idx];
-        uint16_t next_adc_value = temperature_history.temperatures[next_idx];
-
-        // Converte valores ADC para posições Y
-        int y1 = GRAPH_Y_MAX - adc_to_y_position(adc_value);
-        int y2 = GRAPH_Y_MAX - adc_to_y_position(next_adc_value);
-
-        ssd1306_line(ssd, 127 - i, y1, 126 - i, y2, true);
-    }
-
-    // Mostra valor ADC atual
-    uint16_t current_adc = temperature_history.temperatures[(temperature_history.newest_index - 1 + HISTORY_SIZE) % HISTORY_SIZE];
-    // snprintf(value_str, sizeof(value_str), "ADC:%d", current_adc);
-
-    // conversao para valores de temperatura REAL
-    ssd1306_draw_string(ssd, value_str, 30, 0);
-    // Buffer para armazenar a string
-    sprintf(TEMP_REAL, "%.2f", map_value(current_adc, 0, 4095, TEMP_MIN_SENSOR, TEMP_MAX_SENSOR)); // Converte o inteiro em string
-
-    ssd1306_draw_string(ssd, TEMP_REAL, 20, 0); // Desenha uma string
+    // Usa o botão B para simular sensor de fogo
+    return !gpio_get(BUTTON_B); // Inverte porque o botão está com pull-up
 }
 
-// Função para verificar e atualizar o estado do alerta
-void update_alert_status(float current_temp)
+// Função para atualizar a matriz de LEDs
+void update_rgb_led(void)
 {
-    if (current_temp > alert_config.temp_urgent_max)
+    if (system_status.state == SYSTEM_NORMAL)
     {
-        alert_config.current_alert = ALERT_URGENT;
-    }
-    else if (current_temp > alert_config.temp_normal_max)
-    {
-        alert_config.current_alert = ALERT_ATTENTION;
+        // verde();  // Liga matriz na cor verde quando em estado normal
     }
     else
     {
-        alert_config.current_alert = ALERT_NORMAL;
+        printNum(); // Apaga a matriz quando fora do estado normal
     }
 }
 
-// Função para desenhar a tela de alertas
-void draw_alerts_screen(ssd1306_t *ssd)
+// Função para controlar o LED RGB
+void set_rgb_led(uint8_t r, uint8_t g, uint8_t b)
 {
-    ssd1306_fill(ssd, false);
+    // Converte valores de 0-255 para 0-2000 (faixa do PWM)
+    uint16_t duty_r = (r * 2000) / 255;
+    uint16_t duty_g = (g * 2000) / 255;
+    uint16_t duty_b = (b * 2000) / 255;
 
-    // Título
-    ssd1306_draw_string(ssd, "Status System", 10, 0);
-    ssd1306_line(ssd, 0, 10, 128, 10, true);
-
-    // Temperatura atual
-    char temp_str[32];
-    float current_temp = map_value(adc_read(), 0, 4095, TEMP_MIN_SENSOR, TEMP_MAX_SENSOR);
-    snprintf(temp_str, sizeof(temp_str), "Temp: %.1f C", current_temp);
-    ssd1306_draw_string(ssd, temp_str, 5, 15);
-
-    // Status do alerta
-    const char *alert_str;
-    switch (alert_config.current_alert)
-    {
-    case ALERT_URGENT:
-        alert_str = "URGENTE!";
-        // Desenha uma borda piscante para alertas urgentes
-
-        ssd1306_rect(ssd, 40, 20, 100, 20, true, false); // último parâmetro: fill = false
-
-        break;
-    case ALERT_ATTENTION:
-        alert_str = "Atencao!";
-        // Desenha uma borda simples para atenção
-        ssd1306_rect(ssd, 40, 20, 100, 20, true, false); // último parâmetro: fill = false
-        break;
-    default:
-        alert_str = "Normal";
-        pwm_set_duty(LED_R, 0);   // LED vermelho com eixo X
-        pwm_set_duty(LED_G, 500); // LED verde com eixo Y
-        pwm_set_duty(LED_B, 0);   // LED azul com eixo Z
-        break;
-    }
-
-    ssd1306_draw_string(ssd, alert_str, 45, 45);
+    // Aplica os valores ao PWM
+    pwm_set_duty(LED_R, duty_r);
+    pwm_set_duty(LED_G, duty_g);
+    pwm_set_duty(LED_B, duty_b);
 }
-
-// Atualizar a função de configuração
-void draw_config_screen(ssd1306_t *ssd)
-{
-    static int selected_option = 0;
-    static bool editing = false;
-
-    ssd1306_fill(ssd, false);
-    ssd1306_draw_string(ssd, "Configuracao", 20, 0);
-    ssd1306_line(ssd, 0, 10, 128, 10, true);
-
-    char temp_str[32];
-
-    // Opções de configuração
-    snprintf(temp_str, sizeof(temp_str), "%sNormal: %.1f",
-             (selected_option == 0 && editing) ? ">" : " ",
-             alert_config.temp_normal_max);
-    ssd1306_draw_string(ssd, temp_str, 5, 20);
-
-    snprintf(temp_str, sizeof(temp_str), "%sAtencao: %.1f",
-             (selected_option == 1 && editing) ? ">" : " ",
-             alert_config.temp_attention_max);
-    ssd1306_draw_string(ssd, temp_str, 5, 35);
-
-    snprintf(temp_str, sizeof(temp_str), "%sUrgente: %.1f",
-             (selected_option == 2 && editing) ? ">" : " ",
-             alert_config.temp_urgent_max);
-    ssd1306_draw_string(ssd, temp_str, 5, 50);
-
-    // Instruções
-    if (editing)
-    {
-        //ssd1306_draw_string(ssd, "A:+/B:-", 90, 55);
-    }
-    else
-    {
-       // ssd1306_draw_string(ssd, "A:Sel/B:Edit", 70, 55);
-    }
-}
-
-// Atualizar o callback do timer
-bool temperature_alarm_callback(struct repeating_timer *t)
-{
-    adc_select_input(ADC_CHANNEL_TEMP);
-    uint16_t adc_value = adc_read();
-    float current_temp = map_value(adc_value, 0, 4095, TEMP_MIN_SENSOR, TEMP_MAX_SENSOR);
-
-    // Atualiza o estado do alerta
-    update_alert_status(current_temp);
-
-    // Atualiza o LED RGB baseado no estado atual do alerta
-    update_led_status(alert_config.current_alert);
-
-    // Atualiza máximos e mínimos
-    if (current_temp > temp_scale.current_max)
-    {
-        temp_scale.current_max = current_temp;
-    }
-    if (current_temp < temp_scale.current_min)
-    {
-        temp_scale.current_min = current_temp;
-    }
-
-    // Armazena o valor bruto do ADC
-    temperature_history.temperatures[temperature_history.newest_index] = adc_value;
-    temperature_history.newest_index = (temperature_history.newest_index + 1) % HISTORY_SIZE;
-    if (temperature_history.count < HISTORY_SIZE)
-    {
-        temperature_history.count++;
-    }
-
-    new_temperature_available = true;
-    return true;
-}
-
-// Adicionar função para desenhar a tela de estatísticas
-void draw_stats_screen(ssd1306_t *ssd)
-{
-    ssd1306_fill(ssd, false);
-
-    // Título
-    ssd1306_draw_string(ssd, "Estatisticas", 20, 0);
-    ssd1306_line(ssd, 0, 10, 128, 10, true);
-
-    // Temperatura atual
-    char temp_str[32];
-    float current_temp = map_value(adc_read(), 0, 4095, TEMP_MIN_SENSOR, TEMP_MAX_SENSOR);
-    snprintf(temp_str, sizeof(temp_str), "Atual: %.1f C", current_temp);
-    ssd1306_draw_string(ssd, temp_str, 5, 20);
-
-    // Temperatura máxima
-    snprintf(temp_str, sizeof(temp_str), "Max: %.1f C", temp_scale.current_max);
-    ssd1306_draw_string(ssd, temp_str, 5, 35);
-
-    // Temperatura mínima
-    snprintf(temp_str, sizeof(temp_str), "Min: %.1f C", temp_scale.current_min);
-    ssd1306_draw_string(ssd, temp_str, 5, 50);
-}
-
-
-
 
 int main()
 {
-    // Inicialização do sistema
     stdio_init_all();
 
-    // Inicialização do ADC
-    adc_init();
-    adc_gpio_init(TEMP_SENSOR_PIN);
+    // Inicializa a matriz de LEDs
+    npInit(MATRIZ_LED_PIN);
 
-    // Inicialização do I2C
+    // Para ser utilizado o modo BOOTSEL com botão B
+    gpio_init(botaoB);
+    gpio_set_dir(botaoB, GPIO_IN);
+    gpio_pull_up(botaoB);
+    gpio_set_irq_enabled_with_callback(botaoB, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+
+    gpio_init(JOYSTICK_PB);
+    gpio_set_dir(JOYSTICK_PB, GPIO_IN);
+    gpio_pull_up(JOYSTICK_PB);
+
+    gpio_init(Botao_A);
+    gpio_set_dir(Botao_A, GPIO_IN);
+    gpio_pull_up(Botao_A);
+
+    // I2C Initialisation. Using it at 400Khz.
     i2c_init(I2C_PORT, 400 * 1000);
-    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_SDA);
-    gpio_pull_up(I2C_SCL);
 
-    // Inicialização do display OLED
-    ssd1306_t ssd;
-    ssd1306_init(&ssd, 128, 64, false, DISPLAY_ADDR, I2C_PORT);
-    ssd1306_config(&ssd);
+    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);                    // Set the GPIO pin function to I2C
+    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);                    // Set the GPIO pin function to I2C
+    gpio_pull_up(I2C_SDA);                                        // Pull up the data line
+    gpio_pull_up(I2C_SCL);                                        // Pull up the clock line
+    ssd1306_t ssd;                                                // Inicializa a estrutura do display
+    ssd1306_init(&ssd, WIDTH, HEIGHT, false, endereco, I2C_PORT); // Inicializa o display
+    ssd1306_config(&ssd);                                         // Configura o display
+    ssd1306_send_data(&ssd);                                      // Envia os dados para o display
 
-    // Inicializa o tempo inicial da tela splash
-    splash_start_time = to_ms_since_boot(get_absolute_time());
+    // Limpa o display. O display inicia com todos os pixels apagados.
+    ssd1306_fill(&ssd, false);
+    ssd1306_send_data(&ssd);
 
-    // Adicione a inicialização do botão A após as outras inicializações
-    gpio_init(BUTTON_A_PIN);
-    gpio_set_dir(BUTTON_A_PIN, GPIO_IN);
-    gpio_pull_up(BUTTON_A_PIN);
+    adc_init();
+    adc_gpio_init(JOYSTICK_X_PIN);
+    adc_gpio_init(JOYSTICK_Y_PIN);
 
-    // Adicione a inicialização do botão B junto com a do botão A
-    gpio_init(BUTTON_B_PIN);
-    gpio_set_dir(BUTTON_B_PIN, GPIO_IN);
-    gpio_pull_up(BUTTON_B_PIN);
+    int16_t x_pos;
+    int16_t y_pos;
+    char str_x[5];
+    char str_y[5];
 
-    // CONFIGURACAO DA MATRIZ DE LEDS PINO 7
-    npInit(LED_PIN);  // Inicializa a matriz de LEDs (função externa)
-    
-    Num(6);
+    const uint16_t CENTRO_X = 1870;
+    const uint16_t CENTRO_Y = 1969;
+    const uint16_t ZONA_MORTA = 200;
+    const int VELOCIDADE_MAX = 5;
+
+    // Posição central do display
+    const int CENTRO_DISPLAY_X = 64;
+    const int CENTRO_DISPLAY_Y = 32;
+
+    // Posição inicial da letra A (centro do display)
+    int pos_x = CENTRO_DISPLAY_X;
+    int pos_y = CENTRO_DISPLAY_Y;
+    const uint8_t QUADRADO_SIZE = 8; // Você pode alterar este valor para mudar o tamanho
+                                     // Cálculo das margens baseadas no tamanho do quadrado
+    const uint8_t MARGEM = 2;        // Espaço mínimo entre o quadrado e a borda
+    const uint8_t LIMITE_X_MIN = MARGEM;
+    const uint8_t LIMITE_X_MAX = WIDTH - QUADRADO_SIZE - MARGEM;
+    const uint8_t LIMITE_Y_MIN = MARGEM;
+    const uint8_t LIMITE_Y_MAX = HEIGHT - QUADRADO_SIZE - MARGEM;
+    bool cor = true;
 
     // Configura os LEDs para modo PWM
     gpio_set_function(LED_R, GPIO_FUNC_PWM);
     gpio_set_function(LED_G, GPIO_FUNC_PWM);
     gpio_set_function(LED_B, GPIO_FUNC_PWM);
+
+    // Configura os botões
+    gpio_set_irq_enabled_with_callback(JOYSTICK_PB, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+    gpio_set_irq_enabled(Botao_A, GPIO_IRQ_EDGE_FALL, true);
 
     // Configuração do PWM para os LEDs
     uint slice_num_r = pwm_gpio_to_slice_num(LED_R);
@@ -707,127 +340,123 @@ int main()
     pwm_set_enabled(slice_num_g, true);
     pwm_set_enabled(slice_num_b, true);
 
-    // Configuração das interrupções para ambos os botões
-    gpio_set_irq_enabled_with_callback(BUTTON_A_PIN,
-                                       GPIO_IRQ_EDGE_FALL,
-                                       true,
-                                       &gpio_callback);
+    DesligaMatriz();
 
-    gpio_set_irq_enabled_with_callback(BUTTON_B_PIN,
-                                       GPIO_IRQ_EDGE_FALL,
-                                       true,
-                                       &gpio_callback);
+    uint64_t ultimo_tempo = 0;
+    const uint64_t intervalo = 1000 * 1000; // 200 ms em microssegundos
 
-    // Configura o alarme para leitura de temperatura
-    struct repeating_timer timer;
-    add_repeating_timer_ms(TEMP_READ_INTERVAL_MS, temperature_alarm_callback, NULL, &timer);
-
-    // Inicializa os valores de máximo e mínimo
-    temp_scale.current_max = -100.0f; // Começa com um valor baixo
-    temp_scale.current_min = 200.0f;  // Começa com um valor alto
-
-    // Loop principal
     while (true)
     {
-        // Tratamento da interrupção do botão A
-        if (button_a_pressed)
-        {
-            if (current_state == STATE_MENU)
-            {
-                selected_menu_item = (selected_menu_item + 1) % MENU_COUNT;
-            }
-            else if (current_state == STATE_MONITOR)
-            {
-                current_state = STATE_MENU;
-            }
-            button_a_pressed = false;
+        // Lê valores do joystick
+        adc_select_input(0); // Canal 0 para joystick X
+        uint16_t adc_x = adc_read();
+        adc_select_input(1); // Canal 1 para joystick Y
+        uint16_t adc_y = adc_read();
+
+        // Lê temperatura e estado do sensor
+        float temp = read_temperature(adc_x);
+        system_status.current_temp = temp;
+        bool fire = read_fire_sensor();
+
+        if (fire){
+            system_status.state = SYSTEM_CRITICAL;
+        }
+        else{
+            system_status.state = SYSTEM_NORMAL;
         }
 
-        // Tratamento da interrupção do botão B
-        if (button_b_pressed)
+        // Exibe tela de depuração
+        uint64_t agora = time_us_64(); // tempo atual em microssegundos
+
+        if (agora - ultimo_tempo >= intervalo)
         {
-            if (current_state == STATE_MENU)
-            {
-                switch (selected_menu_item)
-                {
-                case MENU_MONITOR:
-                    current_state = STATE_MONITOR;
-                    break;
-                case MENU_HISTORY:
-                    current_state = STATE_HISTORY;
-                    break;
-                case MENU_CONFIG:
-                    current_state = STATE_CONFIG;
-                    break;
-                case MENU_STATS:
-                    current_state = STATE_STATS;
-                    break;
-                case MENU_ALERTS:
-                    current_state = STATE_ALERTS;
-                    break;
-                }
-            }
-            else if (current_state != STATE_SPLASH)
-            {
-                current_state = STATE_MENU;
-            }
-            button_b_pressed = false;
+            ultimo_tempo = agora;
+            show_debug_screen(adc_x, adc_y, temp, fire);
         }
 
-        float value = read_joystick_value();
+       
 
-        // Atualiza estatísticas
-        if (value < temp_stats.min_temp)
-            temp_stats.min_temp = value;
-        if (value > temp_stats.max_temp)
-            temp_stats.max_temp = value;
-        temp_stats.avg_temp = (temp_stats.avg_temp * (num_samples - 1) + value) / num_samples;
+        // Atualiza posição do quadrado com limites
+        x_pos = ((adc_y * (WIDTH - 24)) / 4095) + 8;            // Adiciona margem horizontal
+        y_pos = HEIGHT - 16 - ((adc_x * (HEIGHT - 24)) / 4095); // Adiciona margem vertical
 
-        // Gerenciamento de estados
-        switch (current_state)
+        // Garante que o quadrado fique dentro dos limites
+        if (x_pos < 8)
+            x_pos = 8; // Limite esquerdo
+        if (x_pos > WIDTH - 16)
+            x_pos = WIDTH - 16; // Limite direito
+        if (y_pos < 8)
+            y_pos = 8; // Limite superior
+        if (y_pos > HEIGHT - 16)
+            y_pos = HEIGHT - 16; // Limite inferior
+
+        // Atualiza display
+        ssd1306_fill(&ssd, false);
+        ssd1306_rect(&ssd, y_pos, x_pos, QUADRADO_SIZE, QUADRADO_SIZE, true, true);
+
+        // Desenha borda com espessura variável
+        if (border_style == 1)
         {
-        case STATE_SPLASH:
-            if (to_ms_since_boot(get_absolute_time()) - splash_start_time > SPLASH_DURATION)
+            // Borda fina (1 pixel)
+            ssd1306_rect(&ssd, 0, 0, WIDTH, HEIGHT, true, false);
+        }
+        else
+        {
+            // Borda grossa (2 pixels)
+            ssd1306_rect(&ssd, 0, 0, WIDTH, HEIGHT, true, false);
+            ssd1306_rect(&ssd, 1, 1, WIDTH - 2, HEIGHT - 2, true, false);
+        }
+
+        // Converte valores ADC para string e exibe
+        sprintf(str_x, "%d", adc_x);
+        sprintf(str_y, "%d", adc_y);
+        // ssd1306_draw_string(&ssd, str_x, 8, 52);
+        // ssd1306_draw_string(&ssd, str_y, 49, 52);
+
+        ssd1306_send_data(&ssd);
+
+        // Controle dos LEDs PWM (corrigido vermelho para X e azul para Y)
+        if (toggle_leds)
+        {
+            int32_t dist_x = abs(2048 - adc_x); // Distância do centro para eixo X (LED vermelho)
+            int32_t dist_y = abs(2048 - adc_y); // Distância do centro para eixo Y (LED azul)
+            const int32_t deadzone = 300;
+
+            // LED Vermelho controlado pelo eixo X
+            uint16_t duty_r = 0;
+            if (dist_y > deadzone)
             {
-                current_state = STATE_MENU;
+                duty_r = ((dist_y - deadzone) * 2000) / (2048 - deadzone);
+                if (duty_r > 2000)
+                    duty_r = 2000;
             }
-            draw_splash_screen(&ssd);
-            break;
 
-        case STATE_MENU:
-            draw_menu_screen(&ssd);
-            break;
+            // LED Azul controlado pelo eixo Y
+            uint16_t duty_b = 0;
+            if (dist_x > deadzone)
+            {
+                duty_b = ((dist_x - deadzone) * 2000) / (2048 - deadzone);
+                if (duty_b > 2000)
+                    duty_b = 2000;
+            }
 
-        case STATE_MONITOR:
-            draw_graph_screen(&ssd);
-            break;
-
-        case STATE_HISTORY:
-            draw_history_screen(&ssd);
-            break;
-
-        case STATE_CONFIG:
-            draw_config_screen(&ssd);
-            break;
-
-        case STATE_STATS:
-            draw_stats_screen(&ssd);
-            break;
-
-        case STATE_ALERTS:
-            draw_alerts_screen(&ssd);
-            break;
+            //  pwm_set_duty(LED_R, duty_r); // LED vermelho com eixo X
+            //  pwm_set_duty(LED_B, duty_b); // LED azul com eixo Y
         }
 
-        if (new_temperature_available)
-        {
-            new_temperature_available = false;
-            // Força atualização do display quando há nova temperatura
-            ssd1306_send_data(&ssd);
-        }
+        // Atualiza estado do sistema
+        // printf("Temperatura lida: %.1f°C\n", temp);
 
-        sleep_ms(50); // Pequeno delay para não sobrecarregar o processador
+        // Atualiza matriz de LEDs
+        update_led_matrix();
+
+        // Atualiza LED RGB
+        // update_rgb_led();
+
+        sleep_ms(100); // Atualiza a cada 100ms
     }
 
+    // Desliga a matriz de LEDs antes de encerrar
+    DesligaMatriz();
     return 0;
 }
